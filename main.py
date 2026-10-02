@@ -1,6 +1,6 @@
 """
 Bot isométrico - Digimon (BlueStacks)
-Versión 2.4.3: v2.4.3 + Optimización de alto rendimiento (Downscaling + mss directo + latencia baja).
+Versión 2.5.0: v2.5.0 + Optimización de alto rendimiento (Downscaling + mss directo + latencia baja).
 
 Teclas: G = iniciar | Q = apagar
 Requisitos: pip install pyautogui opencv-python numpy keyboard mss
@@ -40,14 +40,14 @@ CELESTE_BAJO = np.array([86, 195, 170])
 CELESTE_ALTO = np.array([116, 255, 255])
 CASILLA_MIN_RATIO = 0.25           # % de píxeles celestes para considerar una casilla libre
 
-# --- 🏎️ Configuración de Velocidad Agresiva (v2.4.3) ---
-POLL = 0.015                       # Frecuencia de escaneo duplicada (cada 30ms)
+# --- 🏎️ Configuración de Velocidad Agresiva (v2.5.0) ---
+POLL = 0.015                       # Frecuencia de escaneo duplicada (cada 15ms)
 ESPERA_MAX = 1.2                   # Máx. esperando que reaccione tras un clic
 CAMBIO_MIN = 2.0                   # Diferencia mínima para detectar movimiento
 CAMBIO_ESTABLE = 1.0               # Umbral para detectar que se detuvo
 ESTABLE_MAX = 0.5                  # Espera máxima de fin de animación acortada
-GIRO_ESPERA = 0.04                 # Pausa ultracorta entre clic de giro y ataque (80ms)
-ATAQUE_ESPERA = 0.7               # Pausa de recuperación tras pulsar ataque (150ms)
+GIRO_ESPERA = 0.07                 # Pausa ultracorta entre clic de giro y ataque (70ms)
+ATAQUE_ESPERA = 0.10               # Pausa de recuperación tras pulsar ataque (100ms)
 INTENTOS_ATASCO = 3                # Clics sin cambio antes de atacar
 DEBUG = True                       # Guarda debug_ultimo.png a resolución completa
 # ===========================================================================
@@ -97,7 +97,6 @@ def detectar_digimon(gris, plantilla_frente, plantilla_espalda):
     _, val_f, _, loc_f = cv2.minMaxLoc(res_f)
     
     if val_f >= UMBRAL_DIGIMON:
-        # Multiplicamos por 2 para devolver las coordenadas reales en base a la ROI completa
         return (loc_f[0] + ancho_f // 2) * 2, (loc_f[1] + alto_f // 2) * 2
 
     if plantilla_espalda is not None:
@@ -122,12 +121,10 @@ def detectar_piramides(gris, plantilla):
     cands = [(float(res[y, x]), int(x + ancho // 2), int(y + alto // 2)) for x, y in zip(xs, ys)]
     
     puntos_chicos = nms_puntos(cands, min(ancho, alto) // 2)
-    # Reescalar puntos encontrados a coordenadas reales de la ROI
     return [(px * 2, py * 2) for px, py in puntos_chicos]
 
 
 def detectar_tickets(hsv, dig_real):
-    # Nota: El parámetro 'dig_real' viene a escala completa, lo adaptamos a la escala chica
     dig_chico = (dig_real[0] // 2, dig_real[1] // 2)
     
     mascara = cv2.inRange(hsv, TICKET_BAJO, TICKET_ALTO)
@@ -141,13 +138,11 @@ def detectar_tickets(hsv, dig_real):
         x, y, w, h = cv2.boundingRect(c)
         cx, cy = x + w // 2, y + h // 2
         
-        # Filtros de exclusión en escala chica
         if abs(cx - dig_chico[0]) < EXCLUIR_X and abs(cy - dig_chico[1]) < EXCLUIR_Y:
             continue
         if cx < dig_chico[0] - 15:
             continue
             
-        # Almacenar escalando a coordenadas reales de la ROI
         tickets.append((cx * 2, cy * 2))
         
     tickets.sort(key=lambda t: abs(t[0] - dig_real[0]) + abs(t[1] - dig_real[1]))
@@ -159,12 +154,10 @@ def hay_piramide(piramides, x, y):
 
 
 def casilla_libre(camino_chico, x_real, y_real):
-    # Traducimos las coordenadas reales a la matriz reducida del camino
     cx, cy = x_real // 2, y_real // 2
     if not (0 <= cx < (ROI_W // 2) and 0 <= cy < (ROI_H // 2)):
         return False
     
-    # Parche reducido a la mitad (radio 8 en lugar de 15)
     parche = camino_chico[max(0, cy - 8):cy + 8, max(0, cx - 8):cx + 8]
     return parche.size > 0 and (np.count_nonzero(parche) / parche.size) >= CASILLA_MIN_RATIO
 
@@ -172,15 +165,12 @@ def casilla_libre(camino_chico, x_real, y_real):
 # -------------------------------- Acciones --------------------------------
 def clic(x, y):
     """Envía un clic físico instantáneo (0 ms) mediante la API de Windows."""
-    # Convertimos las coordenadas relativas de la ROI a coordenadas absolutas de tu monitor
     pantalla_x = ROI_X + x + random.randint(-2, 2)
     pantalla_y = ROI_Y + y + random.randint(-2, 2)
     
-    # Mover el mouse instantáneamente a la posición
     ctypes.windll.user32.SetCursorPos(pantalla_x, pantalla_y)
-    # Enviar señal física: Clic presionado y clic soltado
-    ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0) # left down
-    ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0) # left up
+    ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
+    ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
 
 
 def atacar():
@@ -225,54 +215,36 @@ def paso_hacia(dig, objetivo):
 
 
 def paso_esquivando(dig, objetivo, bloqueado, piramides, camino_chico):
-    """
-    Versión 2.4.3 Pulida: Evalúa rutas de escape inmediatas y secundarias 
-    para rodear eficazmente los muros de pirámides sin necesidad de romper.
-    """
-    # 1. Definimos las direcciones vecinas inmediatas (Paso 1)
+    """Evalúa rutas de escape inmediatas y secundarias para rodear obstáculos."""
     direcciones = [
         (PASO_X, 0),   # Derecha
         (0, -PASO_Y),  # Arriba
         (0, PASO_Y),   # Abajo
-        (-PASO_X, 0)   # NUEVO v2.4.3: Izquierda (Paso atrás autorizado para esquives complejos)
+        (-PASO_X, 0)   # Izquierda
     ]
-    
     libres = []
     
     for dx, dy in direcciones:
         v1 = (dig[0] + dx, dig[1] + dy)
-        
-        # Ignorar si es la casilla que sabemos que está bloqueada
         if v1 == bloqueado:
             continue
             
-        # Si la casilla inmediata está limpia y tiene suelo celeste, es una candidata
         if not hay_piramide(piramides, *v1) and casilla_libre(camino_chico, *v1):
-            # Calculamos la distancia al ticket
             d = abs(v1[0] - objetivo[0]) / PASO_X + abs(v1[1] - objetivo[1]) / PASO_Y
             libres.append((d, v1))
-            
         else:
-            # NUEVO ESCANEO EFICAZ (Paso 2): Si la inmediata está tapada por una pirámide,
-            # revisamos si dando un rodeo doble (diagonal) el camino se abre.
             for ddx, ddy in direcciones:
-                # Evitamos volver al centro
                 if (dx + ddx == 0) and (dy + ddy == 0):
                     continue
-                
                 v2 = (v1[0] + ddx, v1[1] + ddy)
-                
-                # Si este segundo paso de rodeo está completamente limpio, usamos la casilla v1 para iniciar el desvío
                 if not hay_piramide(piramides, *v2) and casilla_libre(camino_chico, *v2):
                     if not hay_piramide(piramides, *v1) and casilla_libre(camino_chico, *v1):
                         d_futura = abs(v2[0] - objetivo[0]) / PASO_X + abs(v2[1] - objetivo[1]) / PASO_Y
                         libres.append((d_futura, v1))
-
-    # Si encontramos una ruta de escape limpia (corta o de rodeo), devolvemos el mejor primer paso
     if libres:
         return min(libres)[1]
-        
     return None
+
 
 def guardar_debug(bgr, dig, piramides, tickets, destino):
     img = bgr.copy()
@@ -285,41 +257,97 @@ def guardar_debug(bgr, dig, piramides, tickets, destino):
         cv2.drawMarker(img, destino, (0, 0, 255), cv2.MARKER_CROSS, 25, 2)
     cv2.imwrite("debug_ultimo.png", img)
 
+
 # --------------------------------- Decisión -------------------------------
+def evaluar_densidad_ruta(pos_inicial, direccion_nombre, camino_chico, piramides):
+    """
+    Escaneo Perimetral v2.5.0 Pulido: Evalúa la apertura de carriles a 2 pasos.
+    Si el paso inmediato tiene una pirámide, el carril completo se descarta (Puntaje 0)
+    para obligar al bot a dar rodeos largos por el camino limpio.
+    """
+    puntos_libre = 0
+    x, y = pos_inicial[0], pos_inicial[1] # Extracción segura de tupla nativa
+    
+    if direccion_nombre == "abajo":
+        # Evaluamos primero el paso inmediato. Si hay pirámide, abortamos y devolvemos 0.
+        paso_inmediato = (x, y + PASO_Y)
+        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
+            return 0
+            
+        pasos_futuros = [
+            paso_inmediato,
+            (x, y + (PASO_Y * 2)),
+            (x + PASO_X, y + PASO_Y)
+        ]
+    elif direccion_nombre == "arriba":
+        # Evaluamos primero el paso inmediato. Si hay pirámide, abortamos y devolvemos 0.
+        paso_inmediato = (x, y - PASO_Y)
+        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
+            return 0
+            
+        pasos_futuros = [
+            paso_inmediato,
+            (x, y - (PASO_Y * 2)),
+            (x + PASO_X, y - PASO_Y)
+        ]
+    else:
+        return 0
+
+    for p_futuro in pasos_futuros:
+        if not hay_piramide(piramides, *p_futuro) and casilla_libre(camino_chico, *p_futuro):
+            puntos_libre += 1
+            
+    return puntos_libre
+
+
 def decidir(dig, piramides, tickets, camino_chico, ultima_vert):
     global CASILLA_ANTERIOR
 
-    # --- 1) PRIORIDAD MÁXIMA: LÓGICA DE TICKETS v2.4.4 (Con micro-pausa de fijación) ---
+    # --- 1) PRIORIDAD MÁXIMA: TICKETS v2.4.3 PULIDA ---
     if tickets:
         objetivo = tickets[0]
         destino = paso_hacia(dig, objetivo)
         if not hay_piramide(piramides, *destino):
-            # Micro-pausa de 50ms para asegurar la captura del ticket antes de enviar el clic rápido
             time.sleep(0.05)
             return "mover", destino, f"Asegurando captura de ticket en {objetivo}"
 
-        # Dentro de paso_esquivando se permite el rodeo táctico para asegurar premios
         alterno = paso_esquivando(dig, objetivo, destino, piramides, camino_chico)
         if alterno:
             return "mover", alterno, f"Desvío inteligente para buscar ruta limpia hacia ticket"
 
-        # Si el acceso al ticket exige romper, lo ignoramos y pasamos a exploración para no gastar energía
         log.info("Ticket bloqueado sin desvío limpio inmediato. Pasando a exploración.")
 
-    # --- 2) LÓGICA DE EXPLORACIÓN GENERAL REESTRUCTURADA (Sin retroceso en vacío) ---
+    # --- 2) EXPLORACIÓN GENERAL CON ESCANEO PERIMETRAL v2.5.0 ---
     derecha = (dig[0] + PASO_X, dig[1])
     arriba = (dig[0], dig[1] - PASO_Y)
     abajo = (dig[0], dig[1] + PASO_Y)
-    # Se elimina la variable 'izquierda' de la caminata libre para evitar vaivenes infinitos
 
-    verticales = [arriba, abajo]
-    if ultima_vert == "abajo":
-        verticales.reverse()
-
-    # Los únicos candidatos permitidos para avanzar metros en el mapa son: Frente, Abajo y Arriba
-    candidatos = [("derecha", derecha)] + [
-    ("arriba" if v == arriba else "abajo", v) for v in verticales
-    ]
+    if hay_piramide(piramides, *derecha):
+        densidad_abajo = evaluar_densidad_ruta(dig, "abajo", camino_chico, piramides)
+        densidad_arriba = evaluar_densidad_ruta(dig, "arriba", camino_chico, piramides)
+        
+        log.info(f"[Escaneo Perimetral] Densidad -> Abajo: {densidad_abajo} | Arriba: {densidad_arriba}")
+        
+        # FILTRO CRÍTICO ANTI-ROTURA: Si un camino ofrece suelo limpio (densidad > 0) y el otro está bloqueado (0),
+        # forzamos al bot a meter ese carril limpio al inicio de la lista sí o sí.
+        if densidad_abajo > densidad_arriba:
+            candidatos = [("abajo", abajo), ("arriba", arriba)]
+        elif densidad_arriba > densidad_abajo:
+            candidatos = [("arriba", arriba), ("abajo", abajo)]
+        else:
+            # Si ambos pasillos están bloqueados de inmediato (densidad 0), el bot se mantendrá en su vaivén tradicional
+            verticales = [arriba, abajo]
+            if ultima_vert == "abajo":
+                verticales.reverse()
+            candidatos = [("arriba" if v == arriba else "abajo", v) for v in verticales]
+    else:
+        # Si el frente está libre, avanza con la prioridad normal de exploración
+        verticales = [arriba, abajo]
+        if ultima_vert == "abajo":
+            verticales.reverse()
+        candidatos = [("derecha", derecha)] + [
+            ("arriba" if v == arriba else "abajo", v) for v in verticales
+        ]
 
     bloqueadas = []
     for nombre, pos in candidatos:
@@ -332,8 +360,7 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert):
             return "mover", pos, f"Línea de exploración despejada hacia {nombre}"
 
     # --- 3) ÚLTIMO RECURSO ABSOLUTO: ACCIÓN DE FUERZA ---
-    # Si las casillas de desvío fallan por obstrucción o por sombras en el suelo,
-    # el bot activa obligatoriamente la orden de ROMPER al frente para seguir avanzando recto.
+    # Imperialdramon solo atacará si el frente está tapado Y los desvíos laterales también están físicamente bloqueados
     if bloqueadas:
         return "romper", derecha, "Frente obstruido sin desvíos válidos: demoliendo obstáculo frontal"
         
@@ -343,13 +370,14 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert):
 # ----------------------------------- Main -----------------------------------
 def main():
     print("=" * 52)
-    print("  BOT ISOMÉTRICO v2.4.3 - ALTA VELOCIDAD")
+    print("  BOT ISOMÉTRICO v2.5.0 - ESCANEO PERIMETRAL")
     print("  G = iniciar | Q = apagar")
     print("=" * 52)
 
     t_digimon_frente = cv2.imread("digimon.png", cv2.IMREAD_GRAYSCALE)
     t_digimon_espalda = cv2.imread("digimon_espalda.png", cv2.IMREAD_GRAYSCALE)
     t_piramide = cv2.imread("piramide.png", cv2.IMREAD_GRAYSCALE)
+
     if t_digimon_frente is None:
         log.error("Falta digimon.png en el directorio actual. Abortando.")
         return
@@ -374,20 +402,22 @@ def main():
 
         bgr, gris_chico, hsv_chico = capturar()
         dig = detectar_digimon(gris_chico, t_digimon_frente, t_digimon_espalda)
+
         if dig is None:
             sin_digimon += 1
             log.warning("Buscando al Digimon en la matriz reducida (%d)...", sin_digimon)
             time.sleep(0.3)
             continue
-        sin_digimon = 0
 
+        sin_digimon = 0
         piramides = detectar_piramides(gris_chico, t_piramide)
         tickets = detectar_tickets(hsv_chico, dig)
         camino_chico = cv2.inRange(hsv_chico, CELESTE_BAJO, CELESTE_ALTO)
-        tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert)
 
+        tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert)
         if DEBUG:
             guardar_debug(bgr, dig, piramides, tickets, destino)
+
         log.info("[%s] %s -> Objetivo: %s", tipo.upper(), motivo, destino)
 
         if tipo == "mover":

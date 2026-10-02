@@ -50,6 +50,7 @@ GIRO_ESPERA = 0.07                 # Pausa ultracorta entre clic de giro y ataqu
 ATAQUE_ESPERA = 0.10               # Pausa de recuperación tras pulsar ataque (100ms)
 INTENTOS_ATASCO = 3                # Clics sin cambio antes de atacar
 DEBUG = True                       # Guarda debug_ultimo.png a resolución completa
+UMBRAL_COFRE = 0.65        
 # ===========================================================================
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -148,6 +149,33 @@ def detectar_tickets(hsv, dig_real):
     tickets.sort(key=lambda t: abs(t[0] - dig_real[0]) + abs(t[1] - dig_real[1]))
     return tickets
 
+def detectar_cofres_listos(gris_chico, plantilla_cofre):
+    """
+    Módulo v2.5.1: Busca el cofre en la franja inferior usando Template Matching
+    adaptado al Downscaling al 50%. Devuelve la coordenada real ROI.
+    """
+    if plantilla_cofre is None:
+        return []
+        
+    # Reducimos la plantilla a la mitad para acoplarla al Downscaling (15ms)
+    c_chica = cv2.resize(plantilla_cofre, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+    alto, ancho = c_chica.shape[:2]
+    
+    # Delimitamos el escaneo a las últimas filas de la pantalla (Mini-ROI de la barra)
+    y_limite_chico = int((ROI_H - 120) // 2)
+    barra_gris = gris_chico[y_limite_chico:, :]
+    
+    res = cv2.matchTemplate(barra_gris, c_chica, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    
+    if max_val >= UMBRAL_COFRE:
+        # Calculamos el centro del cofre detectado
+        cx_chico = max_loc[0] + ancho // 2
+        cy_chico = y_limite_chico + max_loc[1] + alto // 2
+        # Devolvemos la coordenada escalada a la resolución real de la ROI
+        return [(cx_chico * 2, cy_chico * 2)]
+        
+    return []
 
 def hay_piramide(piramides, x, y):
     return any(abs(x - px) < 45 and abs(y - py) < 45 for px, py in piramides)
@@ -300,10 +328,17 @@ def evaluar_densidad_ruta(pos_inicial, direccion_nombre, camino_chico, piramides
     return puntos_libre
 
 
-def decidir(dig, piramides, tickets, camino_chico, ultima_vert):
+# Modifica los argumentos para recibir 'cofres' y añade el bloque de prioridad máxima:
+def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
     global CASILLA_ANTERIOR
 
-    # --- 1) PRIORIDAD MÁXIMA: TICKETS v2.4.3 PULIDA ---
+    # --- 🏆 PRIORIDAD MÁXIMA v2.5.1: RECLAMO DE COFRES ---
+    if cofres:
+        objetivo_cofre = cofres[0]
+        # Devolvemos un tipo de acción especial "reclamar" para que el main sepa qué hacer
+        return "reclamar", objetivo_cofre, "¡Cofre de recompensa brillando! Reclamando premio de metros"
+
+    # --- 1) PRIORIDAD SECUNDARIA: LÓGICA DE TICKETS v2.4.3 PULIDA ---
     if tickets:
         objetivo = tickets[0]
         destino = paso_hacia(dig, objetivo)
@@ -377,6 +412,7 @@ def main():
     t_digimon_frente = cv2.imread("digimon.png", cv2.IMREAD_GRAYSCALE)
     t_digimon_espalda = cv2.imread("digimon_espalda.png", cv2.IMREAD_GRAYSCALE)
     t_piramide = cv2.imread("piramide.png", cv2.IMREAD_GRAYSCALE)
+    t_cofre = cv2.imread("cofre.png", cv2.IMREAD_GRAYSCALE)
 
     if t_digimon_frente is None:
         log.error("Falta digimon.png en el directorio actual. Abortando.")
@@ -413,14 +449,21 @@ def main():
         piramides = detectar_piramides(gris_chico, t_piramide)
         tickets = detectar_tickets(hsv_chico, dig)
         camino_chico = cv2.inRange(hsv_chico, CELESTE_BAJO, CELESTE_ALTO)
+        cofres = detectar_cofres_listos(gris_chico, t_cofre)
+        
+        # Pasamos la variable 'cofres' a la función decidir
+        tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres)
 
-        tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert)
         if DEBUG:
             guardar_debug(bgr, dig, piramides, tickets, destino)
-
         log.info("[%s] %s -> Objetivo: %s", tipo.upper(), motivo, destino)
 
-        if tipo == "mover":
+        if tipo == "reclamar":
+            # Ejecuta un clic virtual instantáneo sobre el cofre dorado
+            clic(*destino)
+            time.sleep(0.15)  # Breve pausa de 150ms para que el emulador asimile la animación del premio
+            
+        elif tipo == "mover":
             clic(*destino)
             if destino[0] == dig[0]:
                 ultima_vert = "arriba" if destino[1] < dig[1] else "abajo"

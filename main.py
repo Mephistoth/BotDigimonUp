@@ -1,10 +1,10 @@
 """
 Bot isométrico - Digimon (BlueStacks)
-Versión 2.5.0: v2.5.0 + Optimización de alto rendimiento (Downscaling + mss directo + latencia baja).
+Versión 2.5.7: Base v2.5.1 + Sistema Rompe-Bucles por Ataque Automatizado.
 
 Teclas: G = iniciar | Q = apagar
 Requisitos: pip install pyautogui opencv-python numpy keyboard mss
-Archivos en la carpeta: digimon.png, digimon_espalda.png, piramide.png
+Archivos en la carpeta: digimon.png, digimon_espalda.png, piramide.png, cofre.png
 """
 import time
 import random
@@ -28,8 +28,9 @@ PASO_X, PASO_Y = 110, 70           # tamaño de una casilla en pantalla
 
 UMBRAL_DIGIMON = 0.46
 UMBRAL_PIRAMIDE = 0.70
+UMBRAL_COFRE = 0.65                # Coincidencia segura para el cofre de la barra inferior
 
-# Ticket naranja (Filtros HSV a escala real. El bot se encarga de adaptarlos internamente)
+# Ticket naranja (Filtros HSV a escala real)
 TICKET_BAJO = np.array([5, 140, 170])
 TICKET_ALTO = np.array([25, 255, 255])
 TICKET_AREA_MIN = 38               # px² mínimos adaptados a la reducción de escala (150 / 4)
@@ -40,24 +41,24 @@ CELESTE_BAJO = np.array([86, 195, 170])
 CELESTE_ALTO = np.array([116, 255, 255])
 CASILLA_MIN_RATIO = 0.25           # % de píxeles celestes para considerar una casilla libre
 
-# --- 🏎️ Configuración de Velocidad Agresiva (v2.5.0) ---
-POLL = 0.015                       # Frecuencia de escaneo duplicada (cada 15ms)
-ESPERA_MAX = 1.2                   # Máx. esperando que reaccione tras un clic
+# --- 🐢 Configuración de Velocidad Suavizada y Humana ---
+POLL = 0.045                       # Escanea y hace clics cada 45ms (Ritmo más natural)
+ESPERA_MAX = 1.5                   # Máx. esperando que reaccione tras un clic
 CAMBIO_MIN = 2.0                   # Diferencia mínima para detectar movimiento
 CAMBIO_ESTABLE = 1.0               # Umbral para detectar que se detuvo
-ESTABLE_MAX = 0.5                  # Espera máxima de fin de animación acortada
-GIRO_ESPERA = 0.07                 # Pausa ultracorta entre clic de giro y ataque (70ms)
-ATAQUE_ESPERA = 0.10               # Pausa de recuperación tras pulsar ataque (100ms)
+ESTABLE_MAX = 0.6                  # Espera máxima de fin de animación
+GIRO_ESPERA = 0.12                 # Pausa humana para girar antes de golpear (120ms)
+ATAQUE_ESPERA = 0.18               # Pausa de recuperación post-ataque (180ms)
 INTENTOS_ATASCO = 3                # Clics sin cambio antes de atacar
 DEBUG = True                       # Guarda debug_ultimo.png a resolución completa
-UMBRAL_COFRE = 0.65        
 # ===========================================================================
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("bot")
 
 corriendo = True
-CASILLA_ANTERIOR = None
+ULTIMA_DIRECCION_ELEGIDA = None    # Almacena si el último desvío fue "arriba" o "abajo"
+CONTADOR_REBOTES = 0               # Cuenta cuántas veces ha oscilado verticalmente seguidas
 
 
 def apagar():
@@ -68,7 +69,7 @@ def apagar():
 # ------------------------------- Captura Ultra Rápida ----------------------------------
 def capturar():
     """Captura usando mss de forma directa y genera copias a mitad de escala para OpenCV."""
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         monitor = {"left": ROI_X, "top": ROI_Y, "width": ROI_W, "height": ROI_H}
         crudo = sct.grab(monitor)
         bgr = np.array(crudo)[:, :, :3]  # Descartar canal Alpha directamente en memoria
@@ -149,33 +150,6 @@ def detectar_tickets(hsv, dig_real):
     tickets.sort(key=lambda t: abs(t[0] - dig_real[0]) + abs(t[1] - dig_real[1]))
     return tickets
 
-def detectar_cofres_listos(gris_chico, plantilla_cofre):
-    """
-    Módulo v2.5.1: Busca el cofre en la franja inferior usando Template Matching
-    adaptado al Downscaling al 50%. Devuelve la coordenada real ROI.
-    """
-    if plantilla_cofre is None:
-        return []
-        
-    # Reducimos la plantilla a la mitad para acoplarla al Downscaling (15ms)
-    c_chica = cv2.resize(plantilla_cofre, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
-    alto, ancho = c_chica.shape[:2]
-    
-    # Delimitamos el escaneo a las últimas filas de la pantalla (Mini-ROI de la barra)
-    y_limite_chico = int((ROI_H - 120) // 2)
-    barra_gris = gris_chico[y_limite_chico:, :]
-    
-    res = cv2.matchTemplate(barra_gris, c_chica, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    
-    if max_val >= UMBRAL_COFRE:
-        # Calculamos el centro del cofre detectado
-        cx_chico = max_loc[0] + ancho // 2
-        cy_chico = y_limite_chico + max_loc[1] + alto // 2
-        # Devolvemos la coordenada escalada a la resolución real de la ROI
-        return [(cx_chico * 2, cy_chico * 2)]
-        
-    return []
 
 def hay_piramide(piramides, x, y):
     return any(abs(x - px) < 45 and abs(y - py) < 45 for px, py in piramides)
@@ -190,6 +164,27 @@ def casilla_libre(camino_chico, x_real, y_real):
     return parche.size > 0 and (np.count_nonzero(parche) / parche.size) >= CASILLA_MIN_RATIO
 
 
+def detectar_cofres_listos(gris_chico, plantilla_cofre):
+    """Módulo v2.5.1: Busca el cofre en la franja inferior usando Template Matching."""
+    if plantilla_cofre is None:
+        return []
+    c_chica = cv2.resize(plantilla_cofre, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+    alto, ancho = c_chica.shape[:2]
+    
+    y_limite_chico = int((ROI_H - 120) // 2)
+    barra_gris = gris_chico[y_limite_chico:, :]
+    
+    res = cv2.matchTemplate(barra_gris, c_chica, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    
+    if max_val >= UMBRAL_COFRE:
+        cx_chico = max_loc[0] + ancho // 2
+        cy_chico = y_limite_chico + max_loc[1] + alto // 2
+        return [(cx_chico * 2, cy_chico * 2)]
+        
+    return []
+
+
 # -------------------------------- Acciones --------------------------------
 def clic(x, y):
     """Envía un clic físico instantáneo (0 ms) mediante la API de Windows."""
@@ -197,8 +192,8 @@ def clic(x, y):
     pantalla_y = ROI_Y + y + random.randint(-2, 2)
     
     ctypes.windll.user32.SetCursorPos(pantalla_x, pantalla_y)
-    ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
-    ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+    ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0) # left down
+    ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0) # left up
 
 
 def atacar():
@@ -243,13 +238,17 @@ def paso_hacia(dig, objetivo):
 
 
 def paso_esquivando(dig, objetivo, bloqueado, piramides, camino_chico):
-    """Evalúa rutas de escape inmediatas y secundarias para rodear obstáculos."""
+    """
+    Versión 2.5.7 Ultra-Evasión: Evalúa rutas de escape limpias hacia el ticket.
+    Aplica descarte absoluto: si un carril proyectado a futuro contiene una pirámide,
+    la ruta se elimina por completo para forzar rodeos 100% limpios y sin golpes.
+    """
     direcciones = [
         (PASO_X, 0),   # Derecha
         (0, -PASO_Y),  # Arriba
-        (0, PASO_Y),   # Abajo
-        (-PASO_X, 0)   # Izquierda
+        (0, PASO_Y)    # Abajo
     ]
+    
     libres = []
     
     for dx, dy in direcciones:
@@ -257,21 +256,78 @@ def paso_esquivando(dig, objetivo, bloqueado, piramides, camino_chico):
         if v1 == bloqueado:
             continue
             
-        if not hay_piramide(piramides, *v1) and casilla_libre(camino_chico, *v1):
+        # Filtro inmediato: Si la casilla de desvío inicial tiene pirámide o no es celeste, se salta
+        if hay_piramide(piramides, *v1) or not casilla_libre(camino_chico, *v1):
+            continue
+            
+        # Proyección profunda de carril a 2 pasos hacia el ticket
+        carril_completamente_limpio = True
+        for ddx, ddy in direcciones:
+            if (dx + ddx == 0) and (dy + ddy == 0):
+                continue
+            v2 = (v1[0] + ddx, v1[1] + ddy)
+            
+            # Si el camino se cierra más adelante, marcamos el peligro
+            if hay_piramide(piramides, *v2):
+                carril_completamente_limpio = False
+                break
+
+        # 🚫 ULTRA-EVASIÓN: Si el carril no está 100% limpio a futuro, lo ignoramos por completo.
+        # Ya no le sumamos "+ 10"; preferimos descartarlo para obligar al bot a buscar otra alternativa.
+        if carril_completamente_limpio:
             d = abs(v1[0] - objetivo[0]) / PASO_X + abs(v1[1] - objetivo[1]) / PASO_Y
             libres.append((d, v1))
-        else:
-            for ddx, ddy in direcciones:
-                if (dx + ddx == 0) and (dy + ddy == 0):
-                    continue
-                v2 = (v1[0] + ddx, v1[1] + ddy)
-                if not hay_piramide(piramides, *v2) and casilla_libre(camino_chico, *v2):
-                    if not hay_piramide(piramides, *v1) and casilla_libre(camino_chico, *v1):
-                        d_futura = abs(v2[0] - objetivo[0]) / PASO_X + abs(v2[1] - objetivo[1]) / PASO_Y
-                        libres.append((d_futura, v1))
+
+    # Si encontramos una ruta impecable, el bot avanza por ella
     if libres:
         return min(libres)[1]
+        
     return None
+
+
+def evaluar_densidad_ruta(pos_inicial, direccion_nombre, camino_chico, piramides):
+    """Versión 2.5.6 Unificada: Radar en abanico a 3 pasos de profundidad."""
+    puntos_libre = 0
+    tiene_obstaculo = False
+    x, y = pos_inicial[0], pos_inicial[1]
+
+    if direccion_nombre == "abajo":
+        paso_inmediato = (x, y + PASO_Y)
+        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
+            return 0
+        pasos_futuros = [
+            paso_inmediato,
+            (x, y + (PASO_Y * 2)),
+            (x + PASO_X, y + PASO_Y),
+            (x, y + (PASO_Y * 3)),
+            (x + PASO_X, y + (PASO_Y * 2)),
+            (x + (PASO_X * 2), y + PASO_Y),
+        ]
+    elif direccion_nombre == "arriba":
+        paso_inmediato = (x, y - PASO_Y)
+        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
+            return 0
+        pasos_futuros = [
+            paso_inmediato,
+            (x, y - (PASO_Y * 2)),
+            (x + PASO_X, y - PASO_Y),
+            (x, y - (PASO_Y * 3)),
+            (x + PASO_X, y - (PASO_Y * 2)),
+            (x + (PASO_X * 2), y - PASO_Y),
+        ]
+    else:
+        return 0
+
+    for p_futuro in pasos_futuros:
+        if hay_piramide(piramides, *p_futuro):
+            tiene_obstaculo = True
+        elif casilla_libre(camino_chico, *p_futuro):
+            puntos_libre += 1
+
+    if tiene_obstaculo:
+        puntos_libre = max(1, puntos_libre - 3)
+
+    return puntos_libre
 
 
 def guardar_debug(bgr, dig, piramides, tickets, destino):
@@ -286,126 +342,99 @@ def guardar_debug(bgr, dig, piramides, tickets, destino):
     cv2.imwrite("debug_ultimo.png", img)
 
 
-# --------------------------------- Decisión -------------------------------
-def evaluar_densidad_ruta(pos_inicial, direccion_nombre, camino_chico, piramides):
-    """
-    Escaneo Perimetral v2.5.0 Pulido: Evalúa la apertura de carriles a 2 pasos.
-    Si el paso inmediato tiene una pirámide, el carril completo se descarta (Puntaje 0)
-    para obligar al bot a dar rodeos largos por el camino limpio.
-    """
-    puntos_libre = 0
-    x, y = pos_inicial[0], pos_inicial[1] # Extracción segura de tupla nativa
-    
-    if direccion_nombre == "abajo":
-        # Evaluamos primero el paso inmediato. Si hay pirámide, abortamos y devolvemos 0.
-        paso_inmediato = (x, y + PASO_Y)
-        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
-            return 0
-            
-        pasos_futuros = [
-            paso_inmediato,
-            (x, y + (PASO_Y * 2)),
-            (x + PASO_X, y + PASO_Y)
-        ]
-    elif direccion_nombre == "arriba":
-        # Evaluamos primero el paso inmediato. Si hay pirámide, abortamos y devolvemos 0.
-        paso_inmediato = (x, y - PASO_Y)
-        if hay_piramide(piramides, *paso_inmediato) or not casilla_libre(camino_chico, *paso_inmediato):
-            return 0
-            
-        pasos_futuros = [
-            paso_inmediato,
-            (x, y - (PASO_Y * 2)),
-            (x + PASO_X, y - PASO_Y)
-        ]
-    else:
-        return 0
-
-    for p_futuro in pasos_futuros:
-        if not hay_piramide(piramides, *p_futuro) and casilla_libre(camino_chico, *p_futuro):
-            puntos_libre += 1
-            
-    return puntos_libre
-
-
-# Modifica los argumentos para recibir 'cofres' y añade el bloque de prioridad máxima:
+#Decisión -------------------------------
 def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
-    global CASILLA_ANTERIOR
+    global ULTIMA_DIRECCION_ELEGIDA, CONTADOR_REBOTES
 
-    # --- 🏆 PRIORIDAD MÁXIMA v2.5.1: RECLAMO DE COFRES ---
+    # --- 🏆 PRIORIDAD 1: RECLAMO DE COFRES ---
     if cofres:
-        objetivo_cofre = cofres[0]
-        # Devolvemos un tipo de acción especial "reclamar" para que el main sepa qué hacer
-        return "reclamar", objetivo_cofre, "¡Cofre de recompensa brillando! Reclamando premio de metros"
+        return "reclamar", cofres[0], "¡Cofre de recompensa brillando! Reclamando premio de metros"
 
-    # --- 1) PRIORIDAD SECUNDARIA: LÓGICA DE TICKETS v2.4.3 PULIDA ---
-    if tickets:
-        objetivo = tickets[0]
-        destino = paso_hacia(dig, objetivo)
-        if not hay_piramide(piramides, *destino):
-            time.sleep(0.05)
-            return "mover", destino, f"Asegurando captura de ticket en {objetivo}"
-
-        alterno = paso_esquivando(dig, objetivo, destino, piramides, camino_chico)
-        if alterno:
-            return "mover", alterno, f"Desvío inteligente para buscar ruta limpia hacia ticket"
-
-        log.info("Ticket bloqueado sin desvío limpio inmediato. Pasando a exploración.")
-
-    # --- 2) EXPLORACIÓN GENERAL CON ESCANEO PERIMETRAL v2.5.0 ---
     derecha = (dig[0] + PASO_X, dig[1])
     arriba = (dig[0], dig[1] - PASO_Y)
     abajo = (dig[0], dig[1] + PASO_Y)
 
-    if hay_piramide(piramides, *derecha):
-        densidad_abajo = evaluar_densidad_ruta(dig, "abajo", camino_chico, piramides)
-        densidad_arriba = evaluar_densidad_ruta(dig, "arriba", camino_chico, piramides)
-        
-        log.info(f"[Escaneo Perimetral] Densidad -> Abajo: {densidad_abajo} | Arriba: {densidad_arriba}")
-        
-        # FILTRO CRÍTICO ANTI-ROTURA: Si un camino ofrece suelo limpio (densidad > 0) y el otro está bloqueado (0),
-        # forzamos al bot a meter ese carril limpio al inicio de la lista sí o sí.
-        if densidad_abajo > densidad_arriba:
-            candidatos = [("abajo", abajo), ("arriba", arriba)]
-        elif densidad_arriba > densidad_abajo:
-            candidatos = [("arriba", arriba), ("abajo", abajo)]
-        else:
-            # Si ambos pasillos están bloqueados de inmediato (densidad 0), el bot se mantendrá en su vaivén tradicional
-            verticales = [arriba, abajo]
-            if ultima_vert == "abajo":
-                verticales.reverse()
-            candidatos = [("arriba" if v == arriba else "abajo", v) for v in verticales]
+    # 🔥 SISTEMA ROMPE-BUCLES POR ATAQUE (v2.5.7)
+    if CONTADOR_REBOTES >= 3:
+        CONTADOR_REBOTES = 0
+        ULTIMA_DIRECCION_ELEGIDA = None
+        return "romper", derecha, "[SOLUCIÓN BUCLE] Vaivén vertical detectado: Forzando demolición frontal"
+
+    # --- 🎯 PRIORIDAD 2: CASERÍA DE TICKETS NARANJAS ---
+    if tickets:
+        objetivo = tickets[0]
+        destino = paso_hacia(dig, objetivo)
+
+        if not hay_piramide(piramides, *destino):
+            time.sleep(0.05)
+            direc_actual = "arriba" if destino[1] < dig[1] else "abajo" if destino[1] > dig[1] else "derecha"
+            if direc_actual in ["arriba", "abajo"]:
+                if ULTIMA_DIRECCION_ELEGIDA and direc_actual != ULTIMA_DIRECCION_ELEGIDA:
+                    CONTADOR_REBOTES += 1
+                else:
+                    CONTADOR_REBOTES = 0
+                ULTIMA_DIRECCION_ELEGIDA = direc_actual
+            return "mover", destino, f"Asegurando captura de ticket en {objetivo}"
+
+        alterno = paso_esquivando(dig, objetivo, destino, piramides, camino_chico)
+        if alterno:
+            direc_actual = "arriba" if alterno[1] < dig[1] else "abajo" if alterno[1] > dig[1] else "derecha"
+            if direc_actual in ["arriba", "abajo"]:
+                if ULTIMA_DIRECCION_ELEGIDA and direc_actual != ULTIMA_DIRECCION_ELEGIDA:
+                    CONTADOR_REBOTES += 1
+                else:
+                    CONTADOR_REBOTES = 0
+                ULTIMA_DIRECCION_ELEGIDA = direc_actual
+            return "mover", alterno, f"Desvío inteligente para buscar ruta limpia hacia ticket"
+
+    # --- 🚀 PRIORIDAD 3: REGLA DEL BANDEJÓN CENTRAL LIBRE ---
+    if not hay_piramide(piramides, *derecha) and casilla_libre(camino_chico, *derecha):
+        CONTADOR_REBOTES = 0
+        ULTIMA_DIRECCION_ELEGIDA = None
+        return "mover", derecha, "Bandejón central despejado: priorizando avance recto"
+
+    # --- 🧭 PRIORIDAD 4: EXPLORACIÓN GENERAL CON RADAR EN ABANICO ---
+    densidad_abajo = evaluar_densidad_ruta(dig, "abajo", camino_chico, piramides)
+    densidad_arriba = evaluar_densidad_ruta(dig, "arriba", camino_chico, piramides)
+
+    if densidad_abajo > densidad_arriba:
+        candidatos = [("abajo", abajo), ("arriba", arriba)]
+    elif densidad_arriba > densidad_abajo:
+        candidatos = [("arriba", arriba), ("abajo", abajo)]
     else:
-        # Si el frente está libre, avanza con la prioridad normal de exploración
         verticales = [arriba, abajo]
         if ultima_vert == "abajo":
             verticales.reverse()
-        candidatos = [("derecha", derecha)] + [
-            ("arriba" if v == arriba else "abajo", v) for v in verticales
-        ]
+        candidatos = [("arriba" if v == arriba else "abajo", v) for v in verticales]
 
     bloqueadas = []
     for nombre, pos in candidatos:
         if hay_piramide(piramides, *pos):
-            if nombre == "derecha": 
+            if nombre == "derecha":
                 bloqueadas.insert(0, pos)
             else:
                 bloqueadas.append(pos)
         elif casilla_libre(camino_chico, *pos):
+            if nombre in ["arriba", "abajo"]:
+                if ULTIMA_DIRECCION_ELEGIDA and nombre != ULTIMA_DIRECCION_ELEGIDA:
+                    CONTADOR_REBOTES += 1
+                else:
+                    CONTADOR_REBOTES = 0
+                ULTIMA_DIRECCION_ELEGIDA = nombre
             return "mover", pos, f"Línea de exploración despejada hacia {nombre}"
 
-    # --- 3) ÚLTIMO RECURSO ABSOLUTO: ACCIÓN DE FUERZA ---
-    # Imperialdramon solo atacará si el frente está tapado Y los desvíos laterales también están físicamente bloqueados
+    # --- 🔨 ÚLTIMO RECURSO ABSOLUTO ---
+    CONTADOR_REBOTES = 0
+    ULTIMA_DIRECCION_ELEGIDA = None
     if bloqueadas:
-        return "romper", derecha, "Frente obstruido sin desvíos válidos: demoliendo obstáculo frontal"
-        
-    return "romper", derecha, "Lectura de suelo inconsistente: forzando despeje frontal"
+        return "romper", derecha, "Frente obstruido sin desvíos válidos: demoliendo frontal"
+    return "romper", derecha, "Lectura de suelo inconsistente: forzando despeje"
 
 
-# ----------------------------------- Main -----------------------------------
+#Main
 def main():
     print("=" * 52)
-    print("  BOT ISOMÉTRICO v2.5.0 - ESCANEO PERIMETRAL")
+    print("  BOT ISOMÉTRICO v2.5.7 - ROMPE-BUCLES AUTOMÁTICO")
     print("  G = iniciar | Q = apagar")
     print("=" * 52)
 
@@ -450,8 +479,6 @@ def main():
         tickets = detectar_tickets(hsv_chico, dig)
         camino_chico = cv2.inRange(hsv_chico, CELESTE_BAJO, CELESTE_ALTO)
         cofres = detectar_cofres_listos(gris_chico, t_cofre)
-        
-        # Pasamos la variable 'cofres' a la función decidir
         tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres)
 
         if DEBUG:
@@ -459,15 +486,12 @@ def main():
         log.info("[%s] %s -> Objetivo: %s", tipo.upper(), motivo, destino)
 
         if tipo == "reclamar":
-            # Ejecuta un clic virtual instantáneo sobre el cofre dorado
             clic(*destino)
-            time.sleep(0.15)  # Breve pausa de 150ms para que el emulador asimile la animación del premio
-            
+            time.sleep(0.15)
         elif tipo == "mover":
             clic(*destino)
             if destino[0] == dig[0]:
                 ultima_vert = "arriba" if destino[1] < dig[1] else "abajo"
-
             if esperar_reaccion(gris_chico):
                 sin_cambio = 0
             else:
@@ -477,7 +501,7 @@ def main():
                     log.info("[EMERGENCIA] Ejecutando ataque por falta de refresco visual")
                     atacar()
                     sin_cambio = 0
-        else:
+        elif tipo == "romper":
             clic(*destino)
             time.sleep(GIRO_ESPERA)
             atacar()

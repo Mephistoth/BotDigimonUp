@@ -205,12 +205,23 @@ def detectar_cofres_listos(gris_chico, plantilla_cofre):
  
 # -------------------------------- Acciones --------------------------------
 def clic(x, y):
-    """Envía un clic físico dinámico adaptado a la posición de la ventana."""
+    """
+    Envía un clic físico dinámico adaptado a la posición de la ventana.
+    v2.8.0: Reducción leve de la velocidad introduciendo una pausa entre pulsaciones.
+    """
     pantalla_x = ROI_X + x + random.randint(-2, 2)
     pantalla_y = ROI_Y + y + random.randint(-2, 2)
     
+    # Movemos el cursor a la coordenada de forma precisa
     ctypes.windll.user32.SetCursorPos(pantalla_x, pantalla_y)
+    
+    # Presionamos el botón del mouse (Click Down)
     ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
+    
+    # ⏱️ RITMO HUMANO SUAVIZADO: Pausa de milisegundos simulando la pulsación real
+    time.sleep(random.uniform(0.04, 0.075))
+    
+    # Soltamos el botón del mouse (Click Up)
     ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
  
  

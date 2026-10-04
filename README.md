@@ -8,7 +8,7 @@ Bot de automatización reactiva y enrutamiento inteligente basado en **visión a
 
 Para usuarios finales, se encuentra disponible la versión compilada autocontenida que no requiere la instalación de Python ni de dependencias externas [1.6]:
 
-👉 **[Descargar DigiWorld Controller v2.7.0 (.EXE)](https://github.com)** [1.6]
+👉 **[Descargar DigiWorld Controller v2.7.0 (.EXE)](https://github.com/Mephistoth/BotDigimonUp/releases/tag/v2.7.0)** [1.6]
 
 *Nota de Uso: Esta versión viene "limpia visualmente" para garantizar compatibilidad universal con cualquier hardware (Intel/AMD/NVIDIA). Al presionar INICIAR BOT por primera vez, el programa detectará si faltan imágenes y abrirá un cuadro de alerta instructivo guiándote para colocar tus propias capturas de pantalla en la misma carpeta [1.6].*
 

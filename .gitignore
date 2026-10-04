@@ -1,1 +1,4 @@
-__pycache__/ ; echo debug_ultimo.png 
+build/
+dist/
+*.exe
+__pycache__/

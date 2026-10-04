@@ -346,18 +346,26 @@ def guardar_debug(bgr, dig, piramides, tickets, destino):
 # -------------------------------- Decisión -------------------------------
 def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
     global ULTIMA_DIRECCION_ELEGIDA, CONTADOR_REBOTES
+
+    # --- 🏆 PRIORIDAD 1: RECLAMO DE COFRES ---
     if cofres:
         return "reclamar", cofres[0], "¡Cofre de recompensa brillando! Reclamando premio de metros"
+
     derecha = (dig[0] + PASO_X, dig[1])
     arriba = (dig[0], dig[1] - PASO_Y)
     abajo = (dig[0], dig[1] + PASO_Y)
+
+    # 🔥 SISTEMA ROMPE-BUCLES POR ATAQUE (Evita atascos en esquinas)
     if CONTADOR_REBOTES >= 3:
         CONTADOR_REBOTES = 0
         ULTIMA_DIRECCION_ELEGIDA = None
         return "romper", derecha, "[SOLUCIÓN BUCLE] Vaivén vertical detectado: Forzando demolición frontal"
+
+    # --- 🎯 PRIORIDAD 2: CACERÍA INTELIGENTE DE TICKETS NARANJAS ---
     if tickets:
         objetivo = tickets[0]
         destino = paso_hacia(dig, objetivo)
+
         if not hay_piramide(piramides, *destino):
             time.sleep(0.05)
             direc_actual = "arriba" if destino[1] < dig[1] else "abajo" if destino[1] > dig[1] else "derecha"
@@ -368,6 +376,7 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
                     CONTADOR_REBOTES = 0
                 ULTIMA_DIRECCION_ELEGIDA = direc_actual
             return "mover", destino, f"Asegurando captura de ticket en {objetivo}"
+
         alterno = paso_esquivando(dig, objetivo, destino, piramides, camino_chico)
         if alterno:
             direc_actual = "arriba" if alterno[1] < dig[1] else "abajo" if alterno[1] > dig[1] else "derecha"
@@ -377,22 +386,32 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
                 else:
                     CONTADOR_REBOTES = 0
                 ULTIMA_DIRECCION_ELEGIDA = direc_actual
-            return "mover", alterno, f"Desvío inteligente para buscar ruta limpia hacia ticket"
+            return "mover", alterno, "Desvío inteligente hacia ticket"
+
+    # --- 🚀 PRIORIDAD 3: REGLA DE ORO DEL AVANCE RECTO (Frena la caída infinita) ---
+    # Si el frente está limpio, el bot avanza a la derecha de forma obligatoria, rompiendo
+    # cualquier imantación o inercia hacia abajo.
     if not hay_piramide(piramides, *derecha) and casilla_libre(camino_chico, *derecha):
         CONTADOR_REBOTES = 0
         ULTIMA_DIRECCION_ELEGIDA = None
-        return "mover", derecha, "Bandejón central despejado: priorizando avance recto"
+        return "mover", derecha, "Bandejón central despejado: priorizando avance recto ➡️"
+
+    # --- 🧭 PRIORIDAD 4: EXPLORACIÓN GENERAL CON RADAR EN ABANICO ---
     densidad_abajo = evaluar_densidad_ruta(dig, "abajo", camino_chico, piramides)
     densidad_arriba = evaluar_densidad_ruta(dig, "arriba", camino_chico, piramides)
+
     if densidad_abajo > densidad_arriba:
         candidatos = [("abajo", abajo), ("arriba", arriba)]
     elif densidad_arriba > densidad_abajo:
         candidatos = [("arriba", arriba), ("abajo", abajo)]
     else:
-        verticales = [arriba, abajo]
+        # Desempate inteligente corregido: Si las densidades son iguales, elige el lado opuesto 
+        # al último paso vertical realizado para mantener la caminata centrada y equilibrada.
         if ultima_vert == "abajo":
-            verticales.reverse()
-        candidatos = [("arriba" if v == arriba else "abajo", v) for v in verticales]
+            candidatos = [("arriba", arriba), ("abajo", abajo)]
+        else:
+            candidatos = [("abajo", abajo), ("arriba", arriba)]
+
     bloqueadas = []
     for nombre, pos in candidatos:
         if hay_piramide(piramides, *pos):
@@ -408,6 +427,7 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
                     CONTADOR_REBOTES = 0
                 ULTIMA_DIRECCION_ELEGIDA = nombre
             return "mover", pos, f"Línea de exploración despejada hacia {nombre}"
+
     CONTADOR_REBOTES = 0
     ULTIMA_DIRECCION_ELEGIDA = None
     if bloqueadas:
@@ -489,8 +509,9 @@ def bucle_principal_bot():
             time.sleep(0.15)
         elif tipo == "mover":
             clic(*destino)
-            if destino == dig:
-                ultima_vert = "arriba" if destino[1] < dig[1] else "abajo"
+            # CORRECCIÓN DE INERCIA: Evaluamos el eje Y [1] para saber si realmente bajó o subió
+            if destino[1] != dig[1]:
+                ultima_vert = "abajo" if destino[1] > dig[1] else "arriba"
             esperar_reaccion(gris_chico)
         else:
             clic(*destino)

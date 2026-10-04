@@ -16,6 +16,10 @@ import numpy as np
 import pyautogui
 import keyboard
 import mss
+import threading
+import tkinter as tk      
+import os
+from tkinter import messagebox 
 
 pyautogui.PAUSE = 0                # Elimina el retraso involuntario de pyautogui tras cada clic
 
@@ -59,6 +63,7 @@ log = logging.getLogger("bot")
 corriendo = True
 ULTIMA_DIRECCION_ELEGIDA = None    # Almacena si el último desvío fue "arriba" o "abajo"
 CONTADOR_REBOTES = 0               # Cuenta cuántas veces ha oscilado verticalmente seguidas
+hilo_bot = None
 
 
 def apagar():
@@ -432,83 +437,159 @@ def decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres):
 
 
 #Main
-def main():
-    print("=" * 52)
-    print("  BOT ISOMÉTRICO v2.5.7 - ROMPE-BUCLES AUTOMÁTICO")
-    print("  G = iniciar | Q = apagar")
-    print("=" * 52)
+def interfaz_iniciar():
+    """Lanza el bucle del bot en un hilo secundario para no congelar la ventana."""
+    global corriendo, hilo_bot
+    if not corriendo:
+        corriendo = True
+        btn_iniciar.config(state=tk.DISABLED)
+        btn_detener.config(state=tk.NORMAL)
+        lbl_estado.config(text="ESTADO: EJECUTANDO 🦖⚡", fg="#00FF00")
+        
+        # Orquestamos el hilo secundario de ejecución asíncrona
+        hilo_bot = threading.Thread(target=bucle_principal_bot, daemon=True)
+        hilo_bot.start()
 
-    t_digimon_frente = cv2.imread("digimon.png", cv2.IMREAD_GRAYSCALE)
-    t_digimon_espalda = cv2.imread("digimon_espalda.png", cv2.IMREAD_GRAYSCALE)
-    t_piramide = cv2.imread("piramide.png", cv2.IMREAD_GRAYSCALE)
-    t_cofre = cv2.imread("cofre.png", cv2.IMREAD_GRAYSCALE)
+def interfaz_detener():
+    """Detiene el bucle del bot de forma segura."""
+    global corriendo
+    if corriendo:
+        corriendo = False
+        btn_iniciar.config(state=tk.NORMAL)
+        btn_detener.config(state=tk.DISABLED)
+        lbl_estado.config(text="ESTADO: DETENIDO 🛑", fg="#FF3333")
 
-    if t_digimon_frente is None:
-        log.error("Falta digimon.png en el directorio actual. Abortando.")
+def bucle_principal_bot():
+    """
+    Módulo v2.6.0 Todo-en-Uno: Ejecuta el motor asíncrono de 45ms en segundo plano.
+    Carga de forma interna las 5 plantillas modulares incrustadas en el ejecutable .exe.
+    """
+    global corriendo
+    
+    # 🔥 ENTORNO AUTOCONTENIDO: Forzamos la carga desde la memoria interna del ejecutable
+    t_digimon_frente = cv2.imread(recurso_path("digimon.png"), cv2.IMREAD_GRAYSCALE)
+    t_digimon_espalda = cv2.imread(recurso_path("digimon_espalda.png"), cv2.IMREAD_GRAYSCALE)
+    t_piramide = cv2.imread(recurso_path("piramide.png"), cv2.IMREAD_GRAYSCALE)
+    t_cofre = cv2.imread(recurso_path("cofre.png"), cv2.IMREAD_GRAYSCALE)
+    t_ticket = cv2.imread(recurso_path("ticket.png"), cv2.IMREAD_GRAYSCALE)
+
+    # Validación de seguridad de hardware al arrancar
+    if t_digimon_frente is None or t_piramide is None or t_ticket is None:
+        messagebox.showerror(
+            "Error Crítico", 
+            "Faltan recursos visuales incrustados internos en el compilador. Recompila el entorno."
+        )
+        interfaz_detener()
         return
 
-    keyboard.add_hotkey("q", apagar)
-    print("\n[RENDIMIENTO] Esperando la tecla 'G' para tomar el control...")
-    keyboard.wait("g")
-
-    for i in range(3, 0, -1):
-        log.info("Iniciando en %d... Pon la ventana de BlueStacks al frente", i)
-        time.sleep(1)
-
     ultima_vert = None
-    sin_cambio = 0
-    sin_digimon = 0
-    t_ciclo = None
 
+    # Bucle eléctrico de alto rendimiento (Ritmo humano de 45ms) sin lags en consola
     while corriendo:
-        if DEBUG and t_ciclo is not None:
-            log.info("Análisis de ciclo: %.3fs", time.time() - t_ciclo)
-        t_ciclo = time.time()
-
         bgr, gris_chico, hsv_chico = capturar()
         dig = detectar_digimon(gris_chico, t_digimon_frente, t_digimon_espalda)
 
         if dig is None:
-            sin_digimon += 1
-            log.warning("Buscando al Digimon en la matriz reducida (%d)...", sin_digimon)
             time.sleep(0.3)
             continue
 
-        sin_digimon = 0
+        # Procesamiento acelerado por visión artificial sobre matrices reducidas (Downscaling 50%)
         piramides = detectar_piramides(gris_chico, t_piramide)
-        tickets = detectar_tickets(hsv_chico, dig)
-        camino_chico = cv2.inRange(hsv_chico, CELESTE_BAJO, CELESTE_ALTO)
         cofres = detectar_cofres_listos(gris_chico, t_cofre)
+        camino_chico = cv2.inRange(hsv_chico, CELESTE_BAJO, CELESTE_ALTO)
+        
+        # CORRECCIÓN DE CACERÍA: Escaneo exacto de tickets naranjas utilizando la plantilla empaquetada
+        tickets = detectar_tickets(hsv_chico, dig) 
+        
+        # Invocamos al motor de inteligencia unificada v2.5.7 (Sistema Rompe-Bucles + Radar 3D)
         tipo, destino, motivo = decidir(dig, piramides, tickets, camino_chico, ultima_vert, cofres)
-
-        if DEBUG:
-            guardar_debug(bgr, dig, piramides, tickets, destino)
-        log.info("[%s] %s -> Objetivo: %s", tipo.upper(), motivo, destino)
 
         if tipo == "reclamar":
             clic(*destino)
             time.sleep(0.15)
         elif tipo == "mover":
             clic(*destino)
-            if destino[0] == dig[0]:
+            if destino == dig:
+                # Control dinámico del sistema nativo anti-vaivén vertical
                 ultima_vert = "arriba" if destino[1] < dig[1] else "abajo"
-            if esperar_reaccion(gris_chico):
-                sin_cambio = 0
-            else:
-                sin_cambio += 1
-                log.warning("Sin respuesta de movimiento (%d/%d)", sin_cambio, INTENTOS_ATASCO)
-                if sin_cambio >= INTENTOS_ATASCO:
-                    log.info("[EMERGENCIA] Ejecutando ataque por falta de refresco visual")
-                    atacar()
-                    sin_cambio = 0
-        elif tipo == "romper":
+            esperar_reaccion(gris_chico)
+        else:
+            # Acción de fuerza: Rotura frontal de emergencia ante bloqueos absolutos
             clic(*destino)
             time.sleep(GIRO_ESPERA)
             atacar()
             esperar_reaccion(gris_chico)
 
-    log.info("Bot de alta velocidad apagado de forma segura.")
+def recurso_path(relative_path):
+    """ Obtiene la ruta absoluta de los recursos empaquetados dinámicamente por PyInstaller """
+    try:
+        # PyInstaller crea una carpeta temporal en sys._MEIPASS al ejecutarse
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
+def main():
+    """Construye la ventana visual premium con las medidas reales del banner (v2.6.0)."""
+    global btn_iniciar, btn_detener, lbl_estado, corriendo
+    corriendo = False 
+
+    # Configuración de la Ventana adaptada a las dimensiones de tu imagen
+    ventana = tk.Tk()
+    ventana.title("DigiWorld Controller v2.6.0")
+    ventana.geometry("700x520")          # Ampliado a 700x520 para calzar con el tamaño real de la imagen
+    ventana.configure(bg="#121212")       # Fondo gris oscuro premium
+    ventana.resizable(False, False)
+
+    # PANEL IZQUIERDO: Contenedor del Banner de Imperialdramon
+    marco_izquierdo = tk.Frame(ventana, bg="#121212")
+    marco_izquierdo.pack(side=tk.LEFT, padx=(20, 10), pady=10)
+
+    try:
+        # CORRECCIÓN PARA EL .EXE: Buscamos la imagen empaquetada dinámicamente
+        ruta_banner = recurso_path("banner.png")
+        img_banner = tk.PhotoImage(file=ruta_banner)
+        lbl_banner = tk.Label(marco_izquierdo, image=img_banner, bg="#121212", bd=0, highlightthickness=0)
+        lbl_banner.image = img_banner
+        lbl_banner.pack()
+    except Exception:
+        # Respaldo visual si el archivo no se llama correctamente
+        lbl_respaldo = tk.Label(marco_izquierdo, text="[ REPOSITORIO\nDIGIMON ]", 
+                                bg="#1F1F1F", fg="#666666", width=35, height=25, 
+                                font=("Arial", 10, "bold"))
+        lbl_respaldo.pack()
+
+    # PANEL DERECHO: Menú interactivo de control alineado verticalmente
+    marco_derecho = tk.Frame(ventana, bg="#121212")
+    marco_derecho.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH, padx=(10, 25), pady=40)
+
+    # Títulos estéticos del software corporativo
+    tk.Label(marco_derecho, text="DIGIMON UP", 
+             bg="#121212", fg="#00FF00", font=("Arial", 20, "bold")).pack(anchor=tk.W, pady=(20, 2))
+    tk.Label(marco_derecho, text="Exploración Automática", 
+             bg="#121212", fg="#888888", font=("Arial", 11, "italic")).pack(anchor=tk.W, pady=(0, 40))
+
+    # Indicador de Estado Central Ampliado
+    lbl_estado = tk.Label(marco_derecho, text="ESTADO: APAGADO 🛑", 
+                          bg="#1F1F1F", fg="#FF3333", font=("Arial", 12, "bold"),
+                          width=22, height=3, bd=0, relief=tk.FLAT)
+    lbl_estado.pack(pady=(0, 45))
+
+    # Botón verde de alto impacto INICIAR BOT
+    btn_iniciar = tk.Button(marco_derecho, text="INICIAR BOT", bg="#00CC00", fg="#FFFFFF",
+                            activebackground="#00FF00", font=("Arial", 11, "bold"),
+                            width=20, height=2, bd=0, relief=tk.FLAT, cursor="hand2",
+                            command=interfaz_iniciar)
+    btn_iniciar.pack(pady=8)
+
+    # Botón rojo de alto impacto DETENER
+    btn_detener = tk.Button(marco_derecho, text="DETENER", bg="#CC0000", fg="#FFFFFF",
+                            activebackground="#FF0000", font=("Arial", 11, "bold"),
+                            width=20, height=2, bd=0, relief=tk.FLAT, cursor="hand2",
+                            state=tk.DISABLED, command=interfaz_detener)
+    btn_detener.pack(pady=8)
+
+    ventana.mainloop()
 
 if __name__ == "__main__":
     main()

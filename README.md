@@ -6,7 +6,7 @@ Bot de automatización reactiva basado en visión artificial para *Digimon UP*.
 
 ## 💾 Descarga Directa
 
-👉 **[Descargar DigiWorld Controller v2.6.0 (.EXE)](https://github.com)**
+👉 **[Descargar DigiWorld Controller v2.6.0 (.EXE)](https://github.com/Mephistoth/BotDigimonUp/releases/tag/v2.6.0)**
 
 ---
 

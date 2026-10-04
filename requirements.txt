@@ -3,3 +3,5 @@ numpy
 pyautogui
 keyboard
 mss
+pyinstaller
+pygetwindow
